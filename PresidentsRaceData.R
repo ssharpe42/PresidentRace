@@ -57,7 +57,7 @@ PresData = read.csv('PresRaceData.csv') %>%
            ID = paste0(substr(DATE,1,4),substr(DATE,6,7), substr(DATE,9,10), Game),
            #Label relay or parter races vs. races with a single winner
            Type = ifelse(grepl('\\/|Split',WINNER),'Relay/Tie','Single'),
-           #Relabel winners with under 6% success (Bill) as "Other"
+           #Relabel retired and non-president winners as "Other"
            WINNER = ifelse(grepl('Werth|\\*|N/A|Screech|Calvin|Herbie|Bill',WINNER),'Other',
                            ifelse(Type=='Relay/Tie', 'Relay/Tie', WINNER)),
            WINNER2 = WINNER,
@@ -69,8 +69,8 @@ PresData = read.csv('PresRaceData.csv') %>%
            Abe_Wperc = Abe, George_Wperc = George, Other_Wperc = Other, Teddy_Wperc = Teddy, Tom_Wperc = Tom) %>%
     group_by(Season) %>%
     #Create 3 game, 5 game, and Season winning percentage variables
-    mutate_each(funs(rollmean(.,k = 3, fill =1/5/3, align = 'right')), Abe, George, Other, Teddy, Tom) %>%
-    mutate_each(funs(rollmean(.,k = 5, fill =1/5/5, align = 'right')), Abe5, George5, Other5, Teddy5, Tom5) %>%
+    mutate_each(funs(rollmean(.,k = 3, fill =1/5, align = 'right')), Abe, George, Other, Teddy, Tom) %>%
+    mutate_each(funs(rollmean(.,k = 5, fill =1/5, align = 'right')), Abe5, George5, Other5, Teddy5, Tom5) %>%
     mutate_each(funs(cummean), Abe_Wperc, George_Wperc , Other_Wperc, Teddy_Wperc , Tom_Wperc)%>%
     #Make each win perc as of the beginning of the current game
     mutate_each(funs(lag(., default = 1/5)), Abe, George, Other, Teddy, Tom) %>%
@@ -113,10 +113,122 @@ FullDataT = left_join(game_logs, PresData, by = 'ID') %>%
 
 FullDataT[,sapply(FullDataT, is.character)] = lapply(FullDataT[, sapply(FullDataT, is.character)], as.factor)
 
-saveRDS(FullData, 'FullData.RDS')
-saveRDS(FullDataT, 'FullDataT.RDS')
 saveRDS(FullData, 'presraceapp/data/FullData.RDS')
 saveRDS(FullDataT, 'presraceapp/data/FullDataT.RDS')
 
+
+################ Graphs  ###############
+library(ggplot2)
+library(scales)
+library(ggthemes)
+
+#Cumulative wins over time
+PresData %>% 
+    select(-Abe, -George, -Other, -Teddy, -Tom) %>%
+    arrange(DATE) %>%
+    mutate(cnt =1) %>%
+    spread(WINNER, cnt, fill = 0) %>%
+    group_by(DATE) %>%
+    summarise_each(funs(sum), Abe, George, Other, Teddy, Tom) %>%
+    ungroup %>%
+    mutate_each(funs(cumsum),-DATE) %>%
+    gather(President, Wins, -DATE) %>%
+    ggplot()+
+    geom_line(aes(x = DATE, y = Wins, color = President), size =1) +
+    theme_fivethirtyeight() +
+    labs(title = 'Race to the Standings', subtitle='Cumulative Wins Over Time')+
+    theme(text = element_text(size = 16))
+
+
+#Attendance distribution by winner
+FullData %>% 
+    filter(ATTEND_PARK_CT>0)%>%
+    ggplot()+
+    geom_density(aes(x = ATTEND_PARK_CT, fill = WINNER), alpha = .5) +
+    theme_fivethirtyeight() +
+    scale_x_continuous(name = 'Game Attendance', labels = comma) +
+    scale_y_continuous(name = 'Density')+
+    labs(title = 'Nationals Park Attendance Distribution', subtitle='by Presidents Race Winner')+
+    theme(text = element_text(size = 16))
+
+
+#Attendance and Score Difference
+FullData %>% 
+    filter(ATTEND_PARK_CT>0)%>%
+    group_by(ATTEND_PARK_CT =  cut(ATTEND_PARK_CT,breaks  = floor(quantile(ATTEND_PARK_CT,c(0,.25,.5,.75,1))/100)*100 + c(0,0,0,0,100)
+                                   ,dig.lab=5, include.lowest=F),
+             ScoreDiff = cut(ScoreDiff, breaks = floor(quantile(ScoreDiff,c(0,.25,.5,.75,1)) + c(-1,0,0,1,1))))%>%
+    summarise(Teddy = mean(WINNER=='Teddy'), George = mean(WINNER=='George'),
+              Tom = mean(WINNER=='Tom'), Abe = mean(WINNER=='Abe'),
+              Other = mean(WINNER=='Other'), N = n()) %>%
+    gather(President, WinPerc, -ATTEND_PARK_CT, -ScoreDiff,-N)%>%
+    ggplot()+
+    geom_point(aes(x = ScoreDiff, y = ATTEND_PARK_CT, colour = WinPerc, size=  N)) +
+    facet_wrap(~President)+
+    theme_fivethirtyeight() +
+    scale_x_discrete(name = "\nNationals' Lead in the 4th Inning") +
+    scale_y_discrete(name = 'Game Attendance\n')+
+    scale_colour_gradient(name = "President Win Percentage", label = percent, breaks = c(0,.25,.5))+
+    scale_size_area(name = '# of Games') +
+    labs(title = "Success with a Crowd", subtitle="Win Percentage by Game Attendance and Nationals' Lead")+
+    theme(text = element_text(size = 16),
+          axis.title = element_text(size = 16))
+
+#Win Perc in last 3 vs Win Perc
+Last3Result = FullData %>%select(Abe, Tom, Teddy, George, Other, WINNER) %>%
+    gather(President, WinPerc3, -WINNER)%>%
+    mutate(cnt = 1, Row = row_number()) %>%
+    spread(WINNER, cnt, fill = 0)%>%
+    select(-Row) %>%
+    filter(WinPerc3 %in% c(0,1/3,2/3,1))%>%
+    group_by(President, WinPerc3)
+
+#Win percentage in next race
+Last3WinPerc = summarise_each(Last3Result, funs(mean)) %>%
+    ungroup%>%
+    gather(President2, WinPerc,-President, -WinPerc3) %>%
+    filter(President==President2) 
+
+#Count of races where last three races had x winning percentage
+Last3N = summarise_each(Last3Result, funs(n())) %>%
+    ungroup%>%
+    gather(President2, N,-President, -WinPerc3) %>%
+    filter(President==President2) 
+
+#Plot previous 3 race win perc vs next win perc
+inner_join(Last3WinPerc, Last3N)%>%
+    mutate(SE = sqrt(WinPerc*(1-WinPerc)/N))%>%
+    ggplot(aes(x = WinPerc3, y = WinPerc))+
+    geom_point()+
+    geom_errorbar(aes(ymin=WinPerc-SE, ymax=WinPerc+SE), width = .25) +
+    facet_wrap(~President)+
+    theme_fivethirtyeight() +
+    scale_x_continuous(name = "\nWinning Percentage Previous 3 Races", labels = percent) +
+    scale_y_continuous(name = "Wining Percentage in the Next Race\n", labels = percent)+
+    labs(title = "Streakiness")+
+    theme(text = element_text(size = 16),
+          axis.title = element_text(size = 16))
+
+#### ATTENDANCE ###
+#Get full data with dates
+FullDataAll= left_join(game_logs, PresData, by = 'ID') %>%
+    left_join(., pbp) %>%
+    filter(!is.na(WINNER))
+
+#Plot rolling 15 game attendance over time
+FullDataAll %>% 
+    filter(ATTEND_PARK_CT>0)%>%
+    group_by(DATE) %>% 
+    filter(row_number()==1)%>%ungroup %>%
+    arrange(DATE) %>%
+    mutate(ATTEND_PARK_CT= rollmean(ATTEND_PARK_CT, 15, align = 'right', fill =NA))%>%
+    ggplot()+
+    geom_line(aes(x = DATE, y = ATTEND_PARK_CT, group = Season))+
+    theme_fivethirtyeight() +
+    scale_x_date(name = "") +
+    scale_y_continuous(name = "Attendance (15 Game Rolling Average)\n", labels =comma)+
+    labs(title = "Nationals Attendance 2008 - 2016", subtitle = '15 Game Rolling Average')+
+    theme(text = element_text(size = 16),
+          axis.title = element_text(size = 16))
 
 
