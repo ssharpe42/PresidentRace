@@ -5,6 +5,8 @@ library(rhandsontable)
 library(mlr)
 library(rpart.plot)
 library(scales)
+library(parallelMap)
+library(dplyr)
 
 
 FullData = readRDS('data/FullData.RDS')
